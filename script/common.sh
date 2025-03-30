@@ -207,10 +207,43 @@ function _is_root() {
     [ "$(whoami)" = "root" ]
 }
 
+# 在文件开头添加安装依赖函数
+_install_deps() {
+    _okcat "正在安装系统依赖..."
+    if command -v apt >/dev/null 2>&1; then
+        apt update && apt install -y \
+            bsdmainutils \
+            net-tools \
+            iproute2 \
+            ss \
+            gzip \
+            tar
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y \
+            util-linux \
+            net-tools \
+            iproute \
+            iputils \
+            gzip \
+            tar
+    else
+        _failcat "不支持的包管理器，请手动安装依赖"
+        exit 1
+    fi
+}
+
 # 修改 _valid_env 函数，移除systemd检查
 function _valid_env() {
-    _is_root || _error_quit "需要 root 或  权限执行"
-    [ "$(ps -p $$ -o comm=)" != "bash" ] && _error_quit "当前终端不是 bash"
+    _is_root || _error_quit "需要 root 或 sudo 权限执行"
+    # [ "$(ps -p $$ -o comm=)" != "bash" ] && _error_quit "当前终端不是 bash"
+    
+    # 检查必要命令是否存在
+    for cmd in gzip tar ss; do
+        if ! command -v $cmd >/dev/null 2>&1; then
+            _install_deps
+            break
+        fi
+    done
 }
 
 # 添加进程管理函数
@@ -225,9 +258,22 @@ _start_clash() {
 }
 
 _stop_clash() {
-    pkill -f "$BIN_KERNEL -d $CLASH_BASE_DIR" >/dev/null 2>&1
+    # 先获取进程ID
+    local pid=$(pgrep -f "$BIN_KERNEL -d $CLASH_BASE_DIR")
+    [ -z "$pid" ] && return 0  # 如果没有运行则直接返回成功
+    
+    # 发送终止信号
+    kill "$pid" >/dev/null 2>&1
     sleep 0.5
-    _is_running && _error_quit "停止Clash失败"
+    
+    # 检查进程是否真的被终止
+    if ps -p "$pid" >/dev/null 2>&1; then
+        # 如果普通kill无效，尝试强制终止
+        kill -9 "$pid" >/dev/null 2>&1
+        sleep 0.5
+        ps -p "$pid" >/dev/null 2>&1 && return 1  # 如果仍然存在则返回失败
+    fi
+    return 0
 }
 
 _restart_clash() {

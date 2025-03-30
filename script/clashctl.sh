@@ -29,17 +29,15 @@ systemctl is-active "$BIN_KERNEL_NAME" >&/dev/null && [ -z "$http_proxy" ] && {
 
 # 修改 clashoff 函数
 function clashoff() {
-    _stop_clash && _okcat '已关闭代理环境' ||
-        _failcat '关闭失败: 执行 "clashstatus" 查看日志' || return 1
-    
-    unset http_proxy
-    unset https_proxy
-    unset HTTP_PROXY
-    unset HTTPS_PROXY
-    unset all_proxy
-    unset ALL_PROXY
-    unset no_proxy
-    unset NO_PROXY
+    if _stop_clash; then
+        _okcat '已关闭代理环境'
+        # 清除代理环境变量
+        unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY no_proxy NO_PROXY
+        return 0
+    else
+        _failcat '关闭失败: 执行 "clashstatus" 查看日志'
+        return 1
+    fi
 }
 
 clashrestart() {
