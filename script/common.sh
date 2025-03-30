@@ -81,7 +81,8 @@ _set_rc() {
 
         echo "source $CLASH_SCRIPT_DIR/common.sh && source $CLASH_SCRIPT_DIR/clashctl.sh" |
             tee -a $BASH_RC_ROOT $BASH_RC_USER >&/dev/null
-        source $CLASH_SCRIPT_DIR/common.sh && source $CLASH_SCRIPT_DIR/clashctl.sh
+        # source $CLASH_SCRIPT_DIR/common.sh && source $CLASH_SCRIPT_DIR/clashctl.sh
+        echo YES
         ;;
 
     unset)
@@ -130,38 +131,31 @@ function _get_kernel_port() {
     MIXED_PORT=${mixed_port:-7890}
     UI_PORT=${ext_port:-9090}
 
-    # 先检查mixed-port端口
-    if _is_already_in_use "$MIXED_PORT" "$BIN_KERNEL_NAME"; then
-        local newPort=$(_get_random_port)
-        local msg="端口占用：${MIXED_PORT} 🎲 随机分配：$newPort"
-        "$BIN_YQ" -i ".mixed-port = $newPort" $CLASH_CONFIG_RUNTIME
-        MIXED_PORT=$newPort
-        _failcat '🎯' "$msg"
-    fi
-
-    # 再检查UI端口
-    if _is_already_in_use "$UI_PORT" "$BIN_KERNEL_NAME"; then
-        local newPort=$(_get_random_port)
-        local msg="端口占用：${UI_PORT} 🎲 随机分配：$newPort"
-        "$BIN_YQ" -i ".external-controller = \"0.0.0.0:$newPort\"" $CLASH_CONFIG_RUNTIME
-        UI_PORT=$newPort
-        _failcat '🎯' "$msg"
-    fi
-
-    # 最后检查端口是否被其他进程占用
-    for port in $MIXED_PORT $UI_PORT; do
-        if ss -tulnp | grep -q ":$port "; then
-            local newPort=$((port + 1))
-            if [ "$port" = "$MIXED_PORT" ]; then
-                "$BIN_YQ" -i ".mixed-port = $newPort" $CLASH_CONFIG_RUNTIME
-                MIXED_PORT=$newPort
-            else
-                "$BIN_YQ" -i ".external-controller = \"0.0.0.0:$newPort\"" $CLASH_CONFIG_RUNTIME
-                UI_PORT=$newPort
+    # 统一端口检查逻辑
+    _check_and_update_port() {
+        local port=$1
+        local config_key=$2
+        local max_retry=5
+        local retry=0
+        
+        while ss -tulnp | grep -q ":$port "; do
+            if [ $retry -ge $max_retry ]; then
+                _failcat "端口 $port 多次尝试后仍被占用"
+                return 1
             fi
-            _failcat "端口 $port 被占用，已自动切换到 $newPort"
-        fi
-    done
+            
+            local newPort=$((port + 1 + RANDOM % 100))  # 随机增加1-100
+            "$BIN_YQ" -i ".$config_key = $newPort" $CLASH_CONFIG_RUNTIME
+            _failcat "端口 $port 被占用，已切换到 $newPort"
+            port=$newPort
+            ((retry++))
+        done
+        
+        echo $port
+    }
+
+    MIXED_PORT=$(_check_and_update_port $MIXED_PORT "mixed-port")
+    UI_PORT=$(_check_and_update_port $UI_PORT "external-controller")
 }
 
 function _get_color() {

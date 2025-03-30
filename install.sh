@@ -60,5 +60,4 @@ _merge_config_restart
 # EOF
 # chmod +x /etc/rc.locald
 clashon && _okcat '🎉' 'enjoy 🎉'
-clashui
 clash
