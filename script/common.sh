@@ -81,7 +81,9 @@ _set_rc() {
 
         echo "source $CLASH_SCRIPT_DIR/common.sh && source $CLASH_SCRIPT_DIR/clashctl.sh" |
             tee -a $BASH_RC_ROOT $BASH_RC_USER >&/dev/null
+        source $CLASH_SCRIPT_DIR/common.sh && source $CLASH_SCRIPT_DIR/clashctl.sh
         ;;
+
     unset)
         sed -i "\|$CLASH_SCRIPT_DIR|d" $BASH_RC_ROOT $BASH_RC_USER
         ;;
@@ -128,26 +130,37 @@ function _get_kernel_port() {
     MIXED_PORT=${mixed_port:-7890}
     UI_PORT=${ext_port:-9090}
 
-    # 端口占用场景
-    local port
+    # 先检查mixed-port端口
+    if _is_already_in_use "$MIXED_PORT" "$BIN_KERNEL_NAME"; then
+        local newPort=$(_get_random_port)
+        local msg="端口占用：${MIXED_PORT} 🎲 随机分配：$newPort"
+        "$BIN_YQ" -i ".mixed-port = $newPort" $CLASH_CONFIG_RUNTIME
+        MIXED_PORT=$newPort
+        _failcat '🎯' "$msg"
+    fi
+
+    # 再检查UI端口
+    if _is_already_in_use "$UI_PORT" "$BIN_KERNEL_NAME"; then
+        local newPort=$(_get_random_port)
+        local msg="端口占用：${UI_PORT} 🎲 随机分配：$newPort"
+        "$BIN_YQ" -i ".external-controller = \"0.0.0.0:$newPort\"" $CLASH_CONFIG_RUNTIME
+        UI_PORT=$newPort
+        _failcat '🎯' "$msg"
+    fi
+
+    # 最后检查端口是否被其他进程占用
     for port in $MIXED_PORT $UI_PORT; do
-        _is_already_in_use "$port" "$BIN_KERNEL_NAME" && {
-            [ "$port" = "$MIXED_PORT" ] && {
-                local newPort=$(_get_random_port)
-                local msg="端口占用：${MIXED_PORT} 🎲 随机分配：$newPort"
-                 "$BIN_YQ" -i ".mixed-port = $newPort" $CLASH_CONFIG_RUNTIME
+        if ss -tulnp | grep -q ":$port "; then
+            local newPort=$((port + 1))
+            if [ "$port" = "$MIXED_PORT" ]; then
+                "$BIN_YQ" -i ".mixed-port = $newPort" $CLASH_CONFIG_RUNTIME
                 MIXED_PORT=$newPort
-                _failcat '🎯' "$msg"
-                continue
-            }
-            [ "$port" = "$UI_PORT" ] && {
-                newPort=$(_get_random_port)
-                msg="端口占用：${UI_PORT} 🎲 随机分配：$newPort"
-                 "$BIN_YQ" -i ".external-controller = \"0.0.0.0:$newPort\"" $CLASH_CONFIG_RUNTIME
+            else
+                "$BIN_YQ" -i ".external-controller = \"0.0.0.0:$newPort\"" $CLASH_CONFIG_RUNTIME
                 UI_PORT=$newPort
-                _failcat '🎯' "$msg"
-            }
-        }
+            fi
+            _failcat "端口 $port 被占用，已自动切换到 $newPort"
+        fi
     done
 }
 
@@ -211,13 +224,7 @@ function _is_root() {
 _install_deps() {
     _okcat "正在安装系统依赖..."
     if command -v apt >/dev/null 2>&1; then
-        apt update && apt install -y \
-            bsdmainutils \
-            net-tools \
-            iproute2 \
-            ss \
-            gzip \
-            tar
+        apt update && apt install net-tools iproute2 bsdmainutils
     elif command -v yum >/dev/null 2>&1; then
         yum install -y \
             util-linux \
@@ -252,27 +259,31 @@ _is_running() {
 }
 
 _start_clash() {
+    # 先确保没有残留进程
+    _stop_clash
+    
+    # 检查端口是否被占用
+    if ss -tulnp | grep -q ":${MIXED_PORT} "; then
+        _failcat "端口 ${MIXED_PORT} 已被占用"
+        return 1
+    fi
+    
     nohup "$BIN_KERNEL" -d "$CLASH_BASE_DIR" -f "$CLASH_CONFIG_RUNTIME" >"$CLASH_BASE_DIR/clash.log" 2>&1 &
-    sleep 1
-    _is_running || _error_quit "启动Clash失败"
+    sleep 2
+    
+    if ! _is_running; then
+        _failcat "启动失败，请查看日志: $CLASH_BASE_DIR/clash.log"
+        return 1
+    fi
+    return 0
 }
 
 _stop_clash() {
-    # 先获取进程ID
-    local pid=$(pgrep -f "$BIN_KERNEL -d $CLASH_BASE_DIR")
-    [ -z "$pid" ] && return 0  # 如果没有运行则直接返回成功
-    
-    # 发送终止信号
-    kill "$pid" >/dev/null 2>&1
-    sleep 0.5
-    
-    # 检查进程是否真的被终止
-    if ps -p "$pid" >/dev/null 2>&1; then
-        # 如果普通kill无效，尝试强制终止
-        kill -9 "$pid" >/dev/null 2>&1
-        sleep 0.5
-        ps -p "$pid" >/dev/null 2>&1 && return 1  # 如果仍然存在则返回失败
-    fi
+    # 停止所有mihomo/clash进程
+    pkill -9 -f "$BIN_KERNEL -d $CLASH_BASE_DIR" >/dev/null 2>&1
+    # 额外检查并杀死残留进程
+    pgrep -f "$BIN_KERNEL_NAME" | xargs -r kill -9 >/dev/null 2>&1
+    sleep 1
     return 0
 }
 
