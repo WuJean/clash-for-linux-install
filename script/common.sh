@@ -121,8 +121,8 @@ _get_random_port() {
 }
 
 function _get_kernel_port() {
-    local mixed_port=$(sudo $BIN_YQ '.mixed-port // ""' $CLASH_CONFIG_RUNTIME)
-    local ext_addr=$(sudo $BIN_YQ '.external-controller // ""' $CLASH_CONFIG_RUNTIME)
+    local mixed_port=$( $BIN_YQ '.mixed-port // ""' $CLASH_CONFIG_RUNTIME)
+    local ext_addr=$( $BIN_YQ '.external-controller // ""' $CLASH_CONFIG_RUNTIME)
     local ext_port=${ext_addr##*:}
 
     MIXED_PORT=${mixed_port:-7890}
@@ -135,7 +135,7 @@ function _get_kernel_port() {
             [ "$port" = "$MIXED_PORT" ] && {
                 local newPort=$(_get_random_port)
                 local msg="端口占用：${MIXED_PORT} 🎲 随机分配：$newPort"
-                sudo "$BIN_YQ" -i ".mixed-port = $newPort" $CLASH_CONFIG_RUNTIME
+                 "$BIN_YQ" -i ".mixed-port = $newPort" $CLASH_CONFIG_RUNTIME
                 MIXED_PORT=$newPort
                 _failcat '🎯' "$msg"
                 continue
@@ -143,7 +143,7 @@ function _get_kernel_port() {
             [ "$port" = "$UI_PORT" ] && {
                 newPort=$(_get_random_port)
                 msg="端口占用：${UI_PORT} 🎲 随机分配：$newPort"
-                sudo "$BIN_YQ" -i ".external-controller = \"0.0.0.0:$newPort\"" $CLASH_CONFIG_RUNTIME
+                 "$BIN_YQ" -i ".external-controller = \"0.0.0.0:$newPort\"" $CLASH_CONFIG_RUNTIME
                 UI_PORT=$newPort
                 _failcat '🎯' "$msg"
             }
@@ -207,10 +207,32 @@ function _is_root() {
     [ "$(whoami)" = "root" ]
 }
 
+# 修改 _valid_env 函数，移除systemd检查
 function _valid_env() {
-    _is_root || _error_quit "需要 root 或 sudo 权限执行"
+    _is_root || _error_quit "需要 root 或  权限执行"
     [ "$(ps -p $$ -o comm=)" != "bash" ] && _error_quit "当前终端不是 bash"
-    [ "$(ps -p 1 -o comm=)" != "systemd" ] && _error_quit "系统不具备 systemd"
+}
+
+# 添加进程管理函数
+_is_running() {
+    pgrep -f "$BIN_KERNEL -d $CLASH_BASE_DIR" >/dev/null
+}
+
+_start_clash() {
+    nohup "$BIN_KERNEL" -d "$CLASH_BASE_DIR" -f "$CLASH_CONFIG_RUNTIME" >"$CLASH_BASE_DIR/clash.log" 2>&1 &
+    sleep 1
+    _is_running || _error_quit "启动Clash失败"
+}
+
+_stop_clash() {
+    pkill -f "$BIN_KERNEL -d $CLASH_BASE_DIR" >/dev/null 2>&1
+    sleep 0.5
+    _is_running && _error_quit "停止Clash失败"
+}
+
+_restart_clash() {
+    _stop_clash
+    _start_clash
 }
 
 function _valid_config() {
@@ -269,7 +291,7 @@ function _download_config() {
         local dest=$1
         local url=$2
         local agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0'
-        sudo curl \
+         curl \
             --silent \
             --show-error \
             --insecure \
@@ -278,7 +300,7 @@ function _download_config() {
             --user-agent "$agent" \
             --output "$dest" \
             "$url" ||
-            sudo wget \
+             wget \
                 --no-verbose \
                 --no-check-certificate \
                 --timeout 3 \
@@ -322,14 +344,14 @@ _start_convert() {
         local newPort=$(_get_random_port)
         _failcat '🎯' "端口占用：$BIN_SUBCONVERTER_PORT 🎲 随机分配：$newPort"
         [ ! -e $BIN_SUBCONVERTER_CONFIG ] && {
-            sudo /bin/mv -f $BIN_SUBCONVERTER_DIR/pref.example.yml $BIN_SUBCONVERTER_CONFIG
+             /bin/mv -f $BIN_SUBCONVERTER_DIR/pref.example.yml $BIN_SUBCONVERTER_CONFIG
         }
-        sudo $BIN_YQ -i ".server.port = $newPort" $BIN_SUBCONVERTER_CONFIG
+         $BIN_YQ -i ".server.port = $newPort" $BIN_SUBCONVERTER_CONFIG
         BIN_SUBCONVERTER_PORT=$newPort
     }
     local start=$(date +%s)
     # 子shell运行，屏蔽kill时的输出
-    (sudo $BIN_SUBCONVERTER 2>&1 | sudo tee $BIN_SUBCONVERTER_LOG >/dev/null &)
+    ( $BIN_SUBCONVERTER 2>&1 |  tee $BIN_SUBCONVERTER_LOG >/dev/null &)
     while ! _is_bind "$BIN_SUBCONVERTER_PORT" >&/dev/null; do
         sleep 0.05s
         local now=$(date +%s)
@@ -338,4 +360,22 @@ _start_convert() {
 }
 _stop_convert() {
     pkill -9 -f $BIN_SUBCONVERTER >&/dev/null
+}
+
+function _merge_config_restart() {
+    _stop_clash
+    _start_clash
+}
+
+function _tunon() {
+    _tunstatus 2>/dev/null && return 0
+    "$BIN_YQ" -i '.tun.enable = true' "$CLASH_CONFIG_MIXIN"
+    _merge_config_restart
+    sleep 0.5s
+    # 替换journalctl检查为直接检查日志文件
+    grep -E -m1 'unsupported kernel version|Start TUN listening error' "$CLASH_BASE_DIR/clash.log" && {
+        _tunoff >&/dev/null
+        _error_quit '不支持的内核版本'
+    }
+    _okcat "Tun 模式已开启"
 }

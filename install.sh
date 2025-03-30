@@ -37,24 +37,18 @@ echo "$url" >"$CLASH_CONFIG_URL"
 /bin/cp -rf "$SCRIPT_BASE_DIR" "$CLASH_SCRIPT_DIR"
 /bin/ls "$RESOURCES_BASE_DIR" | grep -Ev 'zip|png' | xargs -I {} /bin/cp -rf "${RESOURCES_BASE_DIR}/{}" "$CLASH_BASE_DIR"
 tar -xf "$ZIP_UI" -C "$CLASH_BASE_DIR"
+# 移除systemd服务创建部分，修改为：
 _set_rc set
-
 _merge_config_restart
-cat <<EOF >"/etc/systemd/system/${BIN_KERNEL_NAME}.service"
-[Unit]
-Description=$BIN_KERNEL_NAME Daemon, A[nother] Clash Kernel.
 
-[Service]
-Type=simple
-Restart=always
-ExecStart=${BIN_KERNEL} -d ${CLASH_BASE_DIR} -f ${CLASH_CONFIG_RUNTIME}
-
-[Install]
-WantedBy=multi-user.target
+# 添加开机启动脚本（可选）
+cat <<EOF >"/etc/rc.local"
+#!/bin/bash
+# 开机启动Clash
+nohup $BIN_KERNEL -d $CLASH_BASE_DIR -f $CLASH_CONFIG_RUNTIME >$CLASH_BASE_DIR/clash.log 2>&1 &
+exit 0
 EOF
-
-systemctl daemon-reload
-systemctl enable "$BIN_KERNEL_NAME" >&/dev/null || _failcat '💥' "设置自启失败" && _okcat '🚀' "已设置开机自启"
+chmod +x /etc/rc.local
 
 clashon && _okcat '🎉' 'enjoy 🎉'
 clashui
